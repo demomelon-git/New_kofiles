@@ -52,6 +52,49 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Gradle project: $PROJECT_DIR"
 
+      - name: Auto-fix Kotlin preference setter clashes
+        run: |
+          python3 - <<'PY'
+          import re
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_DIR"])
+          prefs_files = list(root.rglob("Prefs.kt"))
+          if not prefs_files:
+              raise SystemExit("Prefs.kt was not found; cannot run the compatibility fixer.")
+
+          # Kotlin properties declared with 'var' already generate JVM setX methods.
+          # If the source also declares a setX(...) function, rename that explicit
+          # function and its Kotlin/Java call sites in the extracted working copy.
+          setter_names = [
+              "setMode", "setTheme", "setShowHidden", "setFoldersFirst",
+              "setConfirmDelete", "setAutoConnect", "setAutoplay", "setSortBy",
+              "setSortDesc", "setAdbPort", "setAskOpenWith",
+          ]
+
+          sources = list(root.rglob("*.kt")) + list(root.rglob("*.java"))
+          changed = 0
+          for prefs in prefs_files:
+              prefs_text = prefs.read_text(encoding="utf-8")
+              for setter in setter_names:
+                  if not re.search(r"\\bfun\\s+" + re.escape(setter) + r"\\s*\\(", prefs_text):
+                      continue
+                  replacement = setter.replace("set", "update", 1)
+                  if re.search(r"\\bfun\\s+" + re.escape(replacement) + r"\\s*\\(", prefs_text):
+                      replacement = setter + "Explicitly"
+                  pattern = re.compile(r"\\b" + re.escape(setter) + r"\\b")
+                  for source in sources:
+                      original = source.read_text(encoding="utf-8")
+                      updated = pattern.sub(replacement, original)
+                      if updated != original:
+                          source.write_text(updated, encoding="utf-8")
+                          changed += 1
+                  prefs_text = prefs.read_text(encoding="utf-8")
+
+          print(f"Compatibility fixer updated {changed} source file(s).")
+          PY
+
       - name: Build debug APK
         run: gradle -p "$PROJECT_DIR" assembleDebug --no-daemon --stacktrace
 
